@@ -1,14 +1,17 @@
 import os
 import torch
 import torch.nn as nn
-from transformers import ByT5Tokenizer, T5ForConditionalGeneration
+from transformers import T5ForConditionalGeneration
+from utils.syllable_tokenizer import SyllableTokenizer
 
 
 class RoundnessToTextModel(nn.Module):
     def __init__(
         self,
-        byt5_model_name="google/byt5-small",
-        freeze_byt5=False,
+        t5_model_name="sonoisa/t5-base-japanese",
+        freeze_t5=False,
+        hidden_dim=256,
+        output_dim=1472,
         device="cuda" if torch.cuda.is_available() else "cpu",
     ):
         super().__init__()
@@ -17,33 +20,29 @@ class RoundnessToTextModel(nn.Module):
 
         # Processing layers for roundness value
         self.processing_layers = nn.Sequential(
-            nn.Linear(1, 512),
+            nn.Linear(1, hidden_dim),
             nn.Tanh(),
-            nn.Linear(512, 1472),
-            nn.BatchNorm1d(1472),
+            nn.Linear(hidden_dim, hidden_dim * 2),
+            nn.BatchNorm1d(hidden_dim * 2),
             nn.Tanh(),
-            nn.Linear(1472, 1472),
+            nn.Linear(hidden_dim * 2, output_dim),
         ).to(self.device)
-
-        # Attention layer
-        self.attention_layer = nn.MultiheadAttention(embed_dim=1472, num_heads=16).to(self.device)
 
         # Xavier initialization for the processing layers
         for layer in self.processing_layers:
             if isinstance(layer, nn.Linear):
                 nn.init.xavier_uniform_(layer.weight)
 
-        # ByT5 model
-        self.byt5 = T5ForConditionalGeneration.from_pretrained(byt5_model_name).to(self.device)
-        self.tokenizer = ByT5Tokenizer.from_pretrained(byt5_model_name)
+        # t5 model
+        self.t5 = T5ForConditionalGeneration.from_pretrained(t5_model_name).to(self.device)
+        self.tokenizer = SyllableTokenizer()
 
-        if freeze_byt5:
-            self.freeze_byt5_parameters()
+        self.freeze_t5_parameters(freeze_t5)
 
-    def freeze_byt5_parameters(self):
-        """Freeze all ByT5 parameters"""
-        for param in self.byt5.parameters():
-            param.requires_grad = False
+    def freeze_t5_parameters(self, freeze):
+        """Freeze all T5 parameters"""
+        for param in self.t5.parameters():
+            param.requires_grad = not freeze
 
     def forward(self, roundness, target_text=None):
         """
@@ -58,12 +57,7 @@ class RoundnessToTextModel(nn.Module):
         roundness = roundness.to(self.device)
         bytes_logits = self.processing_layers(roundness)
 
-        # Apply attention layer
-        bytes_logits = bytes_logits.unsqueeze(1)  # Add sequence dimension
-        attn_output, _ = self.attention_layer(bytes_logits, bytes_logits, bytes_logits)
-        bytes_logits = attn_output.squeeze(1)  # Remove sequence dimension
-
-        # Pass to ByT5
+        # Pass to t5
         if target_text is not None:
             # Training mode
             target_encoding = self.tokenizer(
@@ -72,7 +66,7 @@ class RoundnessToTextModel(nn.Module):
                 return_tensors="pt"
             ).to(self.device)
 
-            outputs = self.byt5(
+            outputs = self.t5(
                 inputs_embeds=bytes_logits.unsqueeze(1),
                 labels=target_encoding['input_ids']
             )
@@ -94,14 +88,14 @@ class RoundnessToTextModel(nn.Module):
 
         else:
             # Inference mode
-            outputs = self.byt5.generate(
+            outputs = self.t5.generate(
                 inputs_embeds=bytes_logits.unsqueeze(1),
-                max_length=20,
+                max_length=8,
                 num_return_sequences=1,
                 num_beams=1,
                 do_sample=True,
-                temperature=0.9,
-                top_p=0.9,
+                # temperature=0.9,
+                # top_p=0.9,
             )
 
             generated_text = self.tokenizer.batch_decode(
@@ -188,11 +182,14 @@ def train(
         model.train()
         trn_loss = 0.0
         for i in range(0, len(trn_roundness), batch_size):
-            roundness_batch = torch.tensor(
-                trn_roundness[i:i+batch_size].values, dtype=torch.float32).view(-1, 1).to(model.device)
+            roundness_batch = torch.tensor(trn_roundness[i:i+batch_size].values, dtype=torch.float32).view(-1, 1).to(model.device)
             target_texts_batch = trn_texts[i:i+batch_size].tolist()
             outputs = trn_step(
-                model, optimizer, roundness_batch, target_texts_batch)
+                model,
+                optimizer,
+                roundness_batch,
+                target_texts_batch
+            )
             trn_loss += outputs['loss'].item()
         trn_loss /= len(trn_roundness) // batch_size
 
@@ -200,15 +197,13 @@ def train(
         val_loss = 0.0
         with torch.no_grad():
             for i in range(0, len(val_roundness), batch_size):
-                roundness_batch = torch.tensor(
-                    val_roundness[i:i+batch_size].values, dtype=torch.float32).view(-1, 1).to(model.device)
+                roundness_batch = torch.tensor(val_roundness[i:i+batch_size].values, dtype=torch.float32).view(-1, 1).to(model.device)
                 target_texts_batch = val_texts[i:i+batch_size].tolist()
                 outputs = model(roundness_batch, target_texts_batch)
                 val_loss += outputs['loss'].item()
 
         val_loss /= len(val_roundness) // batch_size
-        print(f"Epoch {epoch+1:>3}/{epochs:>3}, Train Loss: {
-              trn_loss:.4f}, Validation Loss: {val_loss:.4f}")
+        print(f"Epoch {epoch+1:>3}/{epochs:>3}, Train Loss: {trn_loss:.4f}, Validation Loss: {val_loss:.4f}")
 
         if scheduler:
             scheduler.step()

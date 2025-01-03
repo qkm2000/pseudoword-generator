@@ -1,3 +1,4 @@
+from sklearn.model_selection import KFold
 import os
 import torch
 from torch import nn
@@ -5,15 +6,15 @@ from transformers import ByT5Tokenizer
 
 
 class roundness_determiner(nn.Module):
-    def __init__(self):
+    def __init__(self, hidden_size=16):
         super().__init__()
         self.tokenizer = ByT5Tokenizer.from_pretrained("google/byt5-small")
         self.mlp = torch.nn.Sequential(
-            torch.nn.Linear(16, 64),
+            torch.nn.Linear(16, hidden_size),
             torch.nn.ReLU(),
-            torch.nn.Linear(64, 128),
+            torch.nn.Linear(hidden_size, hidden_size * 2),
             torch.nn.ReLU(),
-            torch.nn.Linear(128, 1),
+            torch.nn.Linear(hidden_size * 2, 1),
             torch.nn.Sigmoid()
         )
         # Initialize weights using Xavier initialization
@@ -166,6 +167,141 @@ def train(
 
     # Load best model state
     model.load_state_dict(best_model_state)
+
+    # Final evaluation on test set
+    if tst_roundness is not None:
+        test_loss = evaluate(tst_roundness, tst_texts)
+        training_history['test_loss'] = test_loss
+        print(f"\nFinal Test Loss: {test_loss:.4f}")
+
+    return training_history
+
+
+def train_kfold(
+    model,
+    roundness,
+    texts,
+    batch_size,
+    k=4,
+    tst_roundness=None,
+    tst_texts=None,
+    optimizer=None,
+    epochs=100,
+    patience=5,
+    scheduler=None,
+    device="cuda" if torch.cuda.is_available() else "cpu",
+):
+    # Initialize optimizer if not provided
+    if optimizer is None:
+        optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+
+    model = model.to(device)
+
+    # Loss function
+    criterion = torch.nn.BCELoss()
+
+    # Training tracking
+    training_history = {
+        'train_loss': [],
+        'val_loss': [],
+        'test_loss': None
+    }
+
+    def tokenize_batch(texts):
+        return model.tokenizer(
+            texts,
+            return_tensors="pt",
+            padding="max_length",
+            max_length=16,
+            truncation=True
+        )["input_ids"].to(device)
+
+    def evaluate(roundness, texts):
+        model.eval()
+        total_loss = 0.0
+        with torch.no_grad():
+            for i in range(0, len(roundness), batch_size):
+                batch_end = min(i + batch_size, len(roundness))
+                roundness_batch = torch.tensor(
+                    roundness[i:batch_end].values,
+                    dtype=torch.float32,
+                    device=device
+                ).view(-1, 1)
+                texts_batch = texts[i:batch_end].tolist()
+                token_ids = tokenize_batch(texts_batch)
+                outputs = model.forward(token_ids)
+                loss = criterion(outputs, roundness_batch)
+                total_loss += loss.item() * (batch_end - i)
+        return total_loss / len(roundness)
+
+    kf = KFold(n_splits=k, shuffle=True, random_state=42)
+
+    fold_idx = 1
+    for train_idx, val_idx in kf.split(roundness):
+        print(f"\nFold {fold_idx}/{k}")
+        fold_idx += 1
+
+        # Split data into training and validation sets
+        trn_roundness, val_roundness = roundness.iloc[train_idx], roundness.iloc[val_idx]
+        trn_texts, val_texts = texts.iloc[train_idx], texts.iloc[val_idx]
+
+        # Initialize early stopping variables
+        best_val_loss = float("inf")
+        epochs_no_improve = 0
+
+        for epoch in range(epochs):
+            # Training phase
+            model.train()
+            train_loss = 0.0
+            for i in range(0, len(trn_roundness), batch_size):
+                batch_end = min(i + batch_size, len(trn_roundness))
+                roundness_batch = torch.tensor(
+                    trn_roundness[i:batch_end].values,
+                    dtype=torch.float32,
+                    device=device
+                ).view(-1, 1)
+                texts_batch = trn_texts[i:batch_end].tolist()
+
+                optimizer.zero_grad()
+                token_ids = tokenize_batch(texts_batch)
+                outputs = model.forward(token_ids)
+                loss = criterion(outputs, roundness_batch)
+                loss.backward()
+                optimizer.step()
+
+                train_loss += loss.item() * (batch_end - i)
+
+            train_loss /= len(trn_roundness)
+
+            # Validation phase
+            val_loss = evaluate(val_roundness, val_texts)
+
+            # Print progress
+            print(f"Epoch {epoch+1:>4}/{epochs:<4}", end=" ")
+            print(f"Train Loss: {train_loss:.4f}", end=" ")
+            print(f"Val Loss: {val_loss:.4f}")
+
+            # Early stopping check
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                epochs_no_improve = 0
+                # Save best model state
+                best_model_state = model.state_dict()
+            else:
+                epochs_no_improve += 1
+
+            if epochs_no_improve >= patience:
+                print(f"Early stopping triggered at epoch {epoch+1}")
+                break
+
+            if scheduler is not None:
+                scheduler.step()
+
+        training_history['train_loss'].append(train_loss)
+        training_history['val_loss'].append(best_val_loss)
+
+        # Load best model state for the fold
+        model.load_state_dict(best_model_state)
 
     # Final evaluation on test set
     if tst_roundness is not None:
