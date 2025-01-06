@@ -2,15 +2,35 @@ from sklearn.model_selection import KFold
 import os
 import torch
 from torch import nn
-from transformers import ByT5Tokenizer
+from transformers import BertTokenizer, BertModel, RobertaTokenizer, RobertaModel
 
 
-class roundness_determiner(nn.Module):
-    def __init__(self, hidden_size=16):
+class RoundnessDeterminerBERT(nn.Module):
+    def __init__(self, model_name="bert-base-uncased", hidden_size=768):
+        """
+        Args:
+            model_name (str): Name of the pretrained model to use 
+                            ('bert-base-uncased', 'roberta-base', etc.)
+            hidden_size (int): Size of hidden layers in the MLP
+        """
         super().__init__()
-        self.tokenizer = ByT5Tokenizer.from_pretrained("google/byt5-small")
+
+        # Initialize tokenizer and base model
+        if "roberta" in model_name:
+            self.tokenizer = RobertaTokenizer.from_pretrained(model_name)
+            self.base_model = RobertaModel.from_pretrained(model_name)
+        else:
+            self.tokenizer = BertTokenizer.from_pretrained(model_name)
+            self.base_model = BertModel.from_pretrained(model_name)
+
+        # Freeze the base model parameters (optional)
+        for param in self.base_model.parameters():
+            param.requires_grad = False
+
+        # MLP for processing the [CLS] token embedding
         self.mlp = torch.nn.Sequential(
-            torch.nn.Linear(16, hidden_size),
+            # 768 is BERT/RoBERTa base hidden size
+            torch.nn.Linear(768, hidden_size),
             torch.nn.BatchNorm1d(hidden_size),
             torch.nn.ReLU(),
             torch.nn.Linear(hidden_size, hidden_size * 3),
@@ -25,13 +45,25 @@ class roundness_determiner(nn.Module):
             torch.nn.Linear(hidden_size, 1),
             torch.nn.Sigmoid()
         )
+
         # Initialize weights using Xavier initialization
         for layer in self.mlp:
             if isinstance(layer, torch.nn.Linear):
                 torch.nn.init.xavier_uniform_(layer.weight)
 
-    def forward(self, token_ids):
-        return self.mlp(token_ids.float())
+    def forward(self, input_ids, attention_mask):
+        # Get the BERT/RoBERTa embeddings
+        outputs = self.base_model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            return_dict=True
+        )
+
+        # Get the [CLS] token embedding
+        cls_embedding = outputs.last_hidden_state[:, 0, :]
+
+        # Pass through MLP
+        return self.mlp(cls_embedding)
 
     def inference(self, texts):
         """
@@ -46,17 +78,19 @@ class roundness_determiner(nn.Module):
         tokens = self.tokenizer(
             texts,
             return_tensors="pt",
-            padding="max_length",
-            max_length=16,
-            truncation=True
+            padding=True,
+            truncation=True,
+            max_length=512  # BERT/RoBERTa max length
         )
 
         # Move to the same device as the model
-        token_ids = tokens["input_ids"].to(self.mlp[0].weight.device)
+        device = "cuda" if next(self.parameters()).is_cuda else "cpu"
+        input_ids = tokens["input_ids"].to(device)
+        attention_mask = tokens["attention_mask"].to(device)
 
         # Get predictions
         with torch.no_grad():
-            outputs = self.forward(token_ids)
+            outputs = self.forward(input_ids, attention_mask)
 
         # Convert to float values
         results = outputs.cpu().numpy().flatten()
@@ -64,14 +98,14 @@ class roundness_determiner(nn.Module):
         return results[0] if len(texts) == 1 else results
 
 
-def tokenize_batch(model, texts, device="cuda" if torch.cuda.is_available() else "cpu"):
+def tokenize_batch(model, texts):
     return model.tokenizer(
         texts,
         return_tensors="pt",
         padding="max_length",
         max_length=16,
         truncation=True
-    )["input_ids"].to(device)
+    )
 
 
 def evaluate(criterion, model, roundness, texts, device="cuda" if torch.cuda.is_available() else "cpu", batch_size=32):
@@ -86,106 +120,11 @@ def evaluate(criterion, model, roundness, texts, device="cuda" if torch.cuda.is_
                 device=device
             ).view(-1, 1)
             texts_batch = texts[i:batch_end].tolist()
-            token_ids = tokenize_batch(model, texts_batch)
-            outputs = model.forward(token_ids)
+            inputs = tokenize_batch(model, texts_batch)
+            outputs = model.forward(inputs["input_ids"].to(device), inputs["attention_mask"].to(device))
             loss = criterion(outputs, roundness_batch)
             total_loss += loss.item() * (batch_end - i)
     return total_loss / len(roundness)
-
-
-def train(
-    model,
-    trn_roundness,
-    trn_texts,
-    val_roundness,
-    val_texts,
-    batch_size,
-    tst_roundness=None,
-    tst_texts=None,
-    optimizer=None,
-    epochs=100,
-    patience=5,
-    scheduler=None,
-    device="cuda" if torch.cuda.is_available() else "cpu",
-):
-    # Initialize optimizer if not provided
-    if optimizer is None:
-        optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
-
-    model = model.to(device)
-
-    # Loss function
-    criterion = torch.nn.BCELoss()
-
-    # Training tracking
-    best_val_loss = float("inf")
-    epochs_no_improve = 0
-    training_history = {
-        'train_loss': [],
-        'val_loss': [],
-        'test_loss': None
-    }
-
-    for epoch in range(epochs):
-        # Training phase
-        model.train()
-        train_loss = 0.0
-        for i in range(0, len(trn_roundness), batch_size):
-            batch_end = min(i + batch_size, len(trn_roundness))
-            roundness_batch = torch.tensor(
-                trn_roundness[i:batch_end].values,
-                dtype=torch.float32,
-                device=device
-            ).view(-1, 1)
-            texts_batch = trn_texts[i:batch_end].tolist()
-
-            optimizer.zero_grad()
-            token_ids = tokenize_batch(model, texts_batch)
-            outputs = model.forward(token_ids)
-            loss = criterion(outputs, roundness_batch)
-            loss.backward()
-            optimizer.step()
-
-            train_loss += loss.item() * (batch_end - i)
-
-        train_loss /= len(trn_roundness)
-        training_history['train_loss'].append(train_loss)
-
-        # Validation phase
-        val_loss = evaluate(criterion, model, val_roundness, val_texts, batch_size=batch_size)
-        training_history['val_loss'].append(val_loss)
-
-        # Print progress
-        print(f"Epoch {epoch+1:>4}/{epochs:<4}", end=" ")
-        print(f"Train Loss: {train_loss:.4f}", end=" ")
-        print(f"Val Loss: {val_loss:.4f}")
-
-        # Early stopping check
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            epochs_no_improve = 0
-            # Save best model
-            best_model_state = model.state_dict()
-        else:
-            epochs_no_improve += 1
-
-        if epochs_no_improve >= patience:
-            print(f"Early stopping triggered at epoch {epoch+1}")
-            break
-
-        if scheduler is not None:
-            scheduler.step()
-
-    # Load best model state
-    model.load_state_dict(best_model_state)
-
-    # Final evaluation on test set
-    if tst_roundness is not None:
-        test_loss = evaluate(criterion, model, tst_roundness, tst_texts, batch_size=batch_size)
-        training_history['test_loss'] = test_loss
-        print(f"\nFinal Test Loss: {test_loss:.4f}")
-
-    return training_history
 
 
 def train_kfold(
@@ -272,8 +211,8 @@ def train_kfold(
                 ).view(-1, 1)
 
                 optimizer.zero_grad()
-                token_ids = tokenize_batch(model, list(texts_batch))
-                outputs = model(token_ids)
+                inputs = tokenize_batch(model, list(texts_batch))
+                outputs = model(inputs["input_ids"].to(device), inputs["attention_mask"].to(device))
                 loss = criterion(outputs, roundness_batch)
                 loss.backward()
 
@@ -360,14 +299,15 @@ def save_model(model, directory="outputs/", filename="roundness_determiner_v0x.p
 def load_model(directory="outputs/", filename="roundness_determiner_v0x.pth"):
     """Load model from disk"""
     path = os.path.join(directory, filename)
-    model = roundness_determiner()
+    model = RoundnessDeterminerBERT()
     model.load_state_dict(torch.load(path, weights_only=True))
     print(f"Model loaded from {path}")
+    model = model.to("cuda" if torch.cuda.is_available() else "cpu")
     return model
 
 
 if __name__ == "__main__":
-    model = roundness_determiner()
+    model = RoundnessDeterminerBERT()
     text = "bouba"
     output = model.forward(text)
     print(output)

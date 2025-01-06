@@ -1,8 +1,8 @@
 import os
 import torch
 import torch.nn as nn
-from transformers import T5ForConditionalGeneration
-from utils.syllable_tokenizer import SyllableTokenizer
+from transformers import T5ForConditionalGeneration, T5Tokenizer
+# from utils.syllable_tokenizer import SyllableTokenizer
 
 
 class RoundnessToTextModel(nn.Module):
@@ -35,7 +35,8 @@ class RoundnessToTextModel(nn.Module):
 
         # t5 model
         self.t5 = T5ForConditionalGeneration.from_pretrained(t5_model_name).to(self.device)
-        self.tokenizer = SyllableTokenizer()
+        self.tokenizer = T5Tokenizer.from_pretrained(t5_model_name)
+        # self.tokenizer = SyllableTokenizer()
 
         self.freeze_t5_parameters(freeze_t5)
 
@@ -117,7 +118,6 @@ def save_model(model, directory="outputs/", filename="model_v0x.pth"):
         os.makedirs(os.path.dirname(path))
 
     torch.save(model.state_dict(), path)
-    print(f"Model saved to {path}")
 
 
 def load_model(directory="outputs/", filename="model_v0x.pth"):
@@ -203,7 +203,6 @@ def train(
                 val_loss += outputs['loss'].item()
 
         val_loss /= len(val_roundness) // batch_size
-        print(f"Epoch {epoch+1:>3}/{epochs:>3}, Train Loss: {trn_loss:.4f}, Validation Loss: {val_loss:.4f}")
 
         if scheduler:
             scheduler.step()
@@ -214,6 +213,8 @@ def train(
             best_model_state = model.state_dict()
         else:
             epochs_no_improve += 1
+
+        print(f"Epoch {epoch+1:>3}/{epochs:>3}, Train Loss: {trn_loss:.4f}, Validation Loss: {val_loss:.4f}, Best Val Loss: {best_val_loss:.4f}")
 
         if epochs_no_improve >= patience:
             print(f"Early stopping triggered after {epoch+1} epochs")
@@ -245,6 +246,7 @@ def inference(model, roundness_value):
     model.eval()
     with torch.no_grad():
         roundness_tensor = torch.tensor(
-            [[roundness_value]], dtype=torch.float32).view(-1, 1).to(model.device)
+            [[roundness_value]], dtype=torch.float32
+        ).view(-1, 1).to(model.device)
         outputs = model(roundness_tensor)
     return outputs['generated_text'][0]
