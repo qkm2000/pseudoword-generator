@@ -118,6 +118,7 @@ def save_model(model, directory="outputs/", filename="model_v0x.pth"):
         os.makedirs(os.path.dirname(path))
 
     torch.save(model.state_dict(), path)
+    print(f"Model saved to {path}")
 
 
 def load_model(directory="outputs/", filename="model_v0x.pth"):

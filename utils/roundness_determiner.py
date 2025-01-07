@@ -296,10 +296,10 @@ def save_model(model, directory="outputs/", filename="roundness_determiner_v0x.p
     print(f"Model saved to {path}")
 
 
-def load_model(directory="outputs/", filename="roundness_determiner_v0x.pth"):
+def load_model(directory="outputs/", filename="roundness_determiner_v0x.pth", model_name="bert-base-uncased"):
     """Load model from disk"""
     path = os.path.join(directory, filename)
-    model = RoundnessDeterminerBERT()
+    model = RoundnessDeterminerBERT(model_name=model_name)
     model.load_state_dict(torch.load(path, weights_only=True))
     print(f"Model loaded from {path}")
     model = model.to("cuda" if torch.cuda.is_available() else "cpu")
