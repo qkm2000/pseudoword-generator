@@ -6,7 +6,7 @@ from transformers import BertTokenizer, BertModel, RobertaTokenizer, RobertaMode
 
 
 class RoundnessDeterminerBERT(nn.Module):
-    def __init__(self, model_name="bert-base-uncased", hidden_size=768):
+    def __init__(self, model_name="bert-base-uncased", hidden_size=768, freeze_base=True):
         """
         Args:
             model_name (str): Name of the pretrained model to use 
@@ -25,7 +25,10 @@ class RoundnessDeterminerBERT(nn.Module):
 
         # Freeze the base model parameters (optional)
         for param in self.base_model.parameters():
-            param.requires_grad = False
+            if freeze_base:
+                param.requires_grad = True
+            else:
+                param.requires_grad = False
 
         # MLP for processing the [CLS] token embedding
         self.mlp = torch.nn.Sequential(

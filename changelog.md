@@ -49,3 +49,15 @@
 - note that the predicted roundness max and min are relatively close together (0.38 to 0.7), which may affect the training of the pseudoword generation
 - validation loss was further reduced to 2.4612 while test loss was at 2.5689
 - the generated results seemed worse than [3.0](#30)
+
+## 3.2
+
+- used the data model from [3.0](#30)
+- change batchnorm to layernorm
+- change xavier to kaiming initialization
+- enabled t5 gradient checkpointing
+- included attention mask in training generation
+- training used 1000 batch size instead of 100 for all previous experiments
+- the model trained for 85 epochs with an early stopping patience of 10
+- validation loss is higher, at 2.6275
+- the generated pseudowords are of higher quality. the words are more consistent in length, and seem to be even more in tune with the roundness. however, there are notable exceptions: 0.1 roundness -> wamu

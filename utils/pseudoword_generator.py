@@ -2,7 +2,6 @@ import os
 import torch
 import torch.nn as nn
 from transformers import T5ForConditionalGeneration, T5Tokenizer
-# from utils.syllable_tokenizer import SyllableTokenizer
 
 
 class RoundnessToTextModel(nn.Module):
@@ -12,6 +11,7 @@ class RoundnessToTextModel(nn.Module):
         freeze_t5=False,
         hidden_dim=256,
         output_dim=1472,
+        tokenizer=None,
         device="cuda" if torch.cuda.is_available() else "cpu",
     ):
         super().__init__()
@@ -23,20 +23,25 @@ class RoundnessToTextModel(nn.Module):
             nn.Linear(1, hidden_dim),
             nn.Tanh(),
             nn.Linear(hidden_dim, hidden_dim * 2),
-            nn.BatchNorm1d(hidden_dim * 2),
+            nn.LayerNorm(hidden_dim * 2),
             nn.Tanh(),
             nn.Linear(hidden_dim * 2, output_dim),
         ).to(self.device)
 
-        # Xavier initialization for the processing layers
-        for layer in self.processing_layers:
-            if isinstance(layer, nn.Linear):
-                nn.init.xavier_uniform_(layer.weight)
+        # Initialize weights using Kaiming initialization
+        for module in self.modules():
+            if isinstance(module, nn.Linear):
+                nn.init.kaiming_normal_(module.weight, nonlinearity='relu')
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
 
-        # t5 model
+        # t5 model and tokenizer
         self.t5 = T5ForConditionalGeneration.from_pretrained(t5_model_name).to(self.device)
-        self.tokenizer = T5Tokenizer.from_pretrained(t5_model_name)
-        # self.tokenizer = SyllableTokenizer()
+        self.t5.gradient_checkpointing_enable()
+        if tokenizer is None:
+            self.tokenizer = T5Tokenizer.from_pretrained(t5_model_name)
+        else:
+            self.tokenizer = tokenizer
 
         self.freeze_t5_parameters(freeze_t5)
 
@@ -56,7 +61,7 @@ class RoundnessToTextModel(nn.Module):
         """
         # Process roundness through layers
         roundness = roundness.to(self.device)
-        bytes_logits = self.processing_layers(roundness)
+        logits = self.processing_layers(roundness)
 
         # Pass to t5
         if target_text is not None:
@@ -68,8 +73,9 @@ class RoundnessToTextModel(nn.Module):
             ).to(self.device)
 
             outputs = self.t5(
-                inputs_embeds=bytes_logits.unsqueeze(1),
-                labels=target_encoding['input_ids']
+                inputs_embeds=logits.unsqueeze(1),
+                labels=target_encoding['input_ids'],
+                attention_mask=torch.ones_like(logits[:, :1]).to(self.device)
             )
 
             loss = outputs.loss
@@ -90,13 +96,11 @@ class RoundnessToTextModel(nn.Module):
         else:
             # Inference mode
             outputs = self.t5.generate(
-                inputs_embeds=bytes_logits.unsqueeze(1),
+                inputs_embeds=logits.unsqueeze(1),
                 max_length=8,
                 num_return_sequences=1,
                 num_beams=1,
                 do_sample=True,
-                # temperature=0.9,
-                # top_p=0.9,
             )
 
             generated_text = self.tokenizer.batch_decode(
@@ -185,12 +189,10 @@ def train(
         for i in range(0, len(trn_roundness), batch_size):
             roundness_batch = torch.tensor(trn_roundness[i:i+batch_size].values, dtype=torch.float32).view(-1, 1).to(model.device)
             target_texts_batch = trn_texts[i:i+batch_size].tolist()
-            outputs = trn_step(
-                model,
-                optimizer,
-                roundness_batch,
-                target_texts_batch
-            )
+            optimizer.zero_grad()
+            outputs = model(roundness_batch, target_texts_batch)
+            outputs['loss'].backward()
+            optimizer.step()
             trn_loss += outputs['loss'].item()
         trn_loss /= len(trn_roundness) // batch_size
 
