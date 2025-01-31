@@ -37,53 +37,9 @@ class SyllableTokenizer(PreTrainedTokenizer):
             **kwargs
         )
 
-    def split_word(self, word):
-        vowels = set('aeiou')
-        result = []
-        i = 0
-
-        while i < len(word):
-            # Check if we're at the last character
-            if i == len(word) - 1:
-                result.append(word[i])
-                break
-
-            # Rule 1: Check for two consonants + vowel
-            if i <= len(word) - 3:
-                curr = word[i]
-                next1 = word[i+1]
-                next2 = word[i+2]
-
-                if (curr not in vowels and
-                    next1 not in vowels and
-                        next2 in vowels):
-                    result.append(word[i:i+3])
-                    i += 3
-                    continue
-
-            # Rule 2: Check for back-to-back vowels
-            if i <= len(word) - 2:
-                curr = word[i]
-                next1 = word[i+1]
-
-                if curr in vowels and next1 in vowels:
-                    result.append(curr)
-                    i += 1
-                    continue
-
-            # Default case: Take current character if no rules match
-            if word[i] not in vowels and i <= len(word) - 2:
-                if word[i+1] in vowels:
-                    result.append(word[i:i+2])
-                    i += 2
-                else:
-                    result.append(word[i])
-                    i += 1
-            else:
-                result.append(word[i])
-                i += 1
-
-        return result
+    def split_word(self, word: str) -> List[str]:
+        """Split a word into alphabets"""
+        return [char for char in word]
 
     def _tokenize(self, text: str) -> List[str]:
         """Split text into syllables."""
@@ -158,8 +114,8 @@ class SyllableTokenizer(PreTrainedTokenizer):
 
 if __name__ == "__main__":
     # Example usage
-    tokenizer = SyllableTokenizer(vocab_file="utils/tokenizer-vocab.json")
-    text = "tokyo to osaka wa totemo tooku desu"
+    tokenizer = SyllableTokenizer(vocab_file="datasets/alphabets.json")
+    text = "tokyo"
     tokens = tokenizer.encode(text)
     print(tokens)
     print(tokenizer.decode(tokens))

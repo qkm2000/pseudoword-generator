@@ -1,255 +1,242 @@
-import os
+from torch import nn
 import torch
-import torch.nn as nn
-from transformers import T5ForConditionalGeneration, T5Tokenizer
+import os
 
 
-class RoundnessToTextModel(nn.Module):
+class WordTransformer(nn.Module):
     def __init__(
         self,
-        t5_model_name="sonoisa/t5-base-japanese",
-        freeze_t5=False,
-        hidden_dim=256,
-        output_dim=1472,
-        tokenizer=None,
-        device="cuda" if torch.cuda.is_available() else "cpu",
+        d_model=64,
+        nhead=4,
+        num_layers=4,
+        max_length=12
     ):
         super().__init__()
+        self.max_length = max_length
 
-        self.device = device
+        # Input embedding: map single number to d_model dimensions
+        self.input_embed = nn.Sequential(
+            nn.Linear(1, d_model),
+            nn.ReLU(),
+            nn.Linear(d_model, d_model)
+        )
 
-        # Processing layers for roundness value
-        self.processing_layers = nn.Sequential(
-            nn.Linear(1, hidden_dim),
-            nn.Tanh(),
-            nn.Linear(hidden_dim, hidden_dim * 2),
-            nn.LayerNorm(hidden_dim * 2),
-            nn.Tanh(),
-            nn.Linear(hidden_dim * 2, output_dim),
-        ).to(self.device)
+        # Position encoding
+        self.pos_encoding = nn.Parameter(torch.randn(max_length, d_model))
 
-        # Initialize weights using Kaiming initialization
-        for module in self.modules():
-            if isinstance(module, nn.Linear):
-                nn.init.kaiming_normal_(module.weight, nonlinearity='relu')
-                if module.bias is not None:
-                    nn.init.zeros_(module.bias)
+        # Token embedding for output (26 letters + 3 special tokens)
+        self.token_embed = nn.Embedding(29, d_model)
 
-        # t5 model and tokenizer
-        self.t5 = T5ForConditionalGeneration.from_pretrained(t5_model_name).to(self.device)
-        self.t5.gradient_checkpointing_enable()
-        if tokenizer is None:
-            self.tokenizer = T5Tokenizer.from_pretrained(t5_model_name)
-        else:
-            self.tokenizer = tokenizer
+        # Transformer layers
+        decoder_layer = nn.TransformerDecoderLayer(
+            d_model, nhead, batch_first=True)
+        self.transformer_decoder = nn.TransformerDecoder(
+            decoder_layer, num_layers)
 
-        self.freeze_t5_parameters(freeze_t5)
+        # Output projection
+        self.output_proj = nn.Linear(d_model, 29)
 
-    def freeze_t5_parameters(self, freeze):
-        """Freeze all T5 parameters"""
-        for param in self.t5.parameters():
-            param.requires_grad = not freeze
+    def forward(self, x, target=None, teacher_forcing_ratio=0):
+        batch_size = x.shape[0]
 
-    def forward(self, roundness, target_text=None):
-        """
-        Forward pass of the model
-        Args:
-            roundness (torch.Tensor): Shape [batch_size, 1]
-            target_text (list[str], optional): Target texts for loss calculation
-        Returns:
-            dict containing generated text and loss (if target_text provided)
-        """
-        # Process roundness through layers
-        roundness = roundness.to(self.device)
-        logits = self.processing_layers(roundness)
+        # Embed input number
+        memory = self.input_embed(x.unsqueeze(-1))
+        memory = memory.unsqueeze(1).repeat(1, self.max_length, 1)
 
-        # Pass to t5
-        if target_text is not None:
-            # Training mode
-            target_encoding = self.tokenizer(
-                target_text,
-                padding=True,
-                return_tensors="pt"
-            ).to(self.device)
+        # Initialize decoder input with start token
+        decoder_input = torch.full((batch_size, 1), 1, device=x.device)
 
-            outputs = self.t5(
-                inputs_embeds=logits.unsqueeze(1),
-                labels=target_encoding['input_ids'],
-                attention_mask=torch.ones_like(logits[:, :1]).to(self.device)
-            )
+        outputs = []
+        for t in range(self.max_length):
+            # Embed current tokens and add position encoding
+            tgt = self.token_embed(decoder_input)
+            tgt = tgt + self.pos_encoding[:decoder_input.size(1)]
 
-            loss = outputs.loss
-            logits = outputs.logits
+            # Generate output
+            decoder_output = self.transformer_decoder(tgt, memory)
+            prediction = self.output_proj(decoder_output[:, -1:])
+            outputs.append(prediction)
 
-            # Generate text for return value
-            generated_ids = torch.argmax(logits, dim=-1)
-            generated_text = self.tokenizer.batch_decode(
-                generated_ids,
-                skip_special_tokens=True
-            )
+            # Teacher forcing or use model's prediction
+            if target is not None and torch.rand(1) < teacher_forcing_ratio:
+                next_token = target[:, t:t+1]
+            else:
+                next_token = prediction.argmax(-1)
 
-            return {
-                'generated_text': generated_text,
-                'loss': loss
-            }
+            decoder_input = torch.cat([decoder_input, next_token], dim=1)
 
-        else:
-            # Inference mode
-            outputs = self.t5.generate(
-                inputs_embeds=logits.unsqueeze(1),
-                max_length=8,
-                num_return_sequences=1,
-                num_beams=1,
-                do_sample=True,
-            )
-
-            generated_text = self.tokenizer.batch_decode(
-                outputs,
-                skip_special_tokens=True
-            )
-
-            return {
-                'generated_text': generated_text,
-                'loss': None
-            }
+        return torch.cat(outputs, dim=1)
 
 
-def save_model(model, directory="outputs/", filename="model_v0x.pth"):
-    """Save model to disk"""
-    path = os.path.join(directory, filename)
-
-    if not os.path.exists(os.path.dirname(path)):
-        os.makedirs(os.path.dirname(path))
-
+def save_model(model, path):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     torch.save(model.state_dict(), path)
-    print(f"Model saved to {path}")
 
 
-def load_model(directory="outputs/", filename="model_v0x.pth"):
-    """Load model from disk"""
-    path = os.path.join(directory, filename)
-    model = RoundnessToTextModel()
+def load_model(
+    path,
+    d_model=64,
+    nhead=4,
+    num_layers=4,
+    max_length=12
+):
+    model = WordTransformer(
+        d_model=d_model,
+        nhead=nhead,
+        num_layers=num_layers,
+        max_length=max_length
+    )
     model.load_state_dict(torch.load(path))
-    print(f"Model loaded from {path}")
     return model
-
-
-def trn_step(model, optimizer, roundness_batch, target_texts):
-    """
-    Single training step
-    Args:
-        model: RoundnessToTextModel instance
-        optimizer: PyTorch optimizer
-        roundness_batch (torch.Tensor): Batch of roundness values
-        target_texts (list[str]): Batch of target texts
-    """
-    optimizer.zero_grad()
-    outputs = model(roundness_batch, target_texts)
-    outputs['loss'].backward()
-    optimizer.step()
-    return outputs
 
 
 def train(
     model,
     optimizer,
-    trn_roundness,
-    val_roundness,
-    tst_roundness,
-    trn_texts,
-    val_texts,
-    tst_texts,
-    batch_size,
-    epochs,
-    patience,
-    scheduler=None,
+    trainLoader,
+    valLoader,
+    testLoader=None,
+    device="cuda" if torch.cuda.is_available() else "cpu",
+    epochs=10,
+    patience=3,
+    min_delta=1e-4
 ):
-    """
-    Full training function with early stopping
-    Args:
-        model: RoundnessToTextModel instance
-        optimizer: PyTorch optimizer
-        trn_roundness (pd.Series): Training roundness values
-        val_roundness (pd.Series): Validation roundness values
-        tst_roundness (pd.Series): Test roundness values
-        trn_texts (pd.Series): Training target texts
-        val_texts (pd.Series): Validation target texts
-        tst_texts (pd.Series): Test target texts
-        batch_size (int): Batch size
-        epochs (int): Number of epochs
-        patience (int): Number of epochs to wait for improvement before stopping
-        scheduler: PyTorch learning rate scheduler (optional)
-    """
+    model.to(device)
+    criterion = nn.CrossEntropyLoss(ignore_index=0)
     best_val_loss = float('inf')
-    epochs_no_improve = 0
+    patience_counter = 0
 
     for epoch in range(epochs):
+        # Training phase
         model.train()
-        trn_loss = 0.0
-        for i in range(0, len(trn_roundness), batch_size):
-            roundness_batch = torch.tensor(trn_roundness[i:i+batch_size].values, dtype=torch.float32).view(-1, 1).to(model.device)
-            target_texts_batch = trn_texts[i:i+batch_size].tolist()
+        total_train_loss = 0
+        num_train_batches = 0
+
+        for i, data in enumerate(trainLoader):
             optimizer.zero_grad()
-            outputs = model(roundness_batch, target_texts_batch)
-            outputs['loss'].backward()
+            number, target_word = data
+            number, target_word = number.to(device), target_word.to(device)
+
+            # Forward pass
+            output = model(number, target_word)
+            output = output.permute(0, 2, 1)
+
+            # Calculate loss
+            loss = criterion(output, target_word)
+            total_train_loss += loss.item()
+            num_train_batches += 1
+
+            # Backward pass
+            loss.backward()
             optimizer.step()
-            trn_loss += outputs['loss'].item()
-        trn_loss /= len(trn_roundness) // batch_size
 
+        avg_train_loss = total_train_loss / num_train_batches
+
+        # Validation phase
         model.eval()
-        val_loss = 0.0
+        total_val_loss = 0
+        num_val_batches = 0
+
         with torch.no_grad():
-            for i in range(0, len(val_roundness), batch_size):
-                roundness_batch = torch.tensor(val_roundness[i:i+batch_size].values, dtype=torch.float32).view(-1, 1).to(model.device)
-                target_texts_batch = val_texts[i:i+batch_size].tolist()
-                outputs = model(roundness_batch, target_texts_batch)
-                val_loss += outputs['loss'].item()
+            for val_data in valLoader:
+                val_number, val_target_word = val_data
+                val_number = val_number.to(device)
+                val_target_word = val_target_word.to(device)
 
-        val_loss /= len(val_roundness) // batch_size
+                val_output = model(val_number, val_target_word)
+                val_output = val_output.permute(0, 2, 1)
 
-        if scheduler:
-            scheduler.step()
+                val_loss = criterion(val_output, val_target_word)
+                total_val_loss += val_loss.item()
+                num_val_batches += 1
 
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            epochs_no_improve = 0
-            best_model_state = model.state_dict()
+        avg_val_loss = total_val_loss / num_val_batches
+
+        # Print epoch summary
+        print(f'Epoch {epoch + 1}: Average Training Loss: {avg_train_loss:.4f}, Average Validation Loss: {avg_val_loss:.4f}')
+
+        # Early stopping
+        if avg_val_loss + min_delta < best_val_loss:
+            best_val_loss = avg_val_loss
+            patience_counter = 0
+            best_model = model.state_dict()
         else:
-            epochs_no_improve += 1
+            patience_counter += 1
 
-        print(f"Epoch {epoch+1:>3}/{epochs:>3}, Train Loss: {trn_loss:.4f}, Validation Loss: {val_loss:.4f}, Best Val Loss: {best_val_loss:.4f}")
-
-        if epochs_no_improve >= patience:
-            print(f"Early stopping triggered after {epoch+1} epochs")
-            model.load_state_dict(best_model_state)
+        if patience_counter >= patience:
+            print(f'\nEarly stopping triggered after epoch {epoch}')
+            model.load_state_dict(best_model)
             break
 
-    # Test evaluation
-    model.eval()
-    tst_loss = 0.0
-    with torch.no_grad():
-        for i in range(0, len(tst_roundness), batch_size):
-            roundness_batch = torch.tensor(
-                tst_roundness[i:i+batch_size].values, dtype=torch.float32).view(-1, 1).to(model.device)
-            target_texts_batch = tst_texts[i:i+batch_size].tolist()
-            outputs = model(roundness_batch, target_texts_batch)
-            tst_loss += outputs['loss'].item()
+    # Final testing phase
+    if testLoader is not None:
+        total_test_loss = 0
+        num_test_batches = 0
+        correct_predictions = 0
+        total_predictions = 0
 
-    tst_loss /= len(tst_roundness) // batch_size
-    print(f"Test Loss: {tst_loss:.4f}")
+        print("\nEvaluating on test set...")
+        model.eval()
+        with torch.no_grad():
+            for test_data in testLoader:
+                test_number, test_target_word = test_data
+                test_number = test_number.to(device)
+                test_target_word = test_target_word.to(device)
+
+                test_output = model(test_number, test_target_word)
+                test_output = test_output.permute(0, 2, 1)
+
+                test_loss = criterion(test_output, test_target_word)
+                total_test_loss += test_loss.item()
+                num_test_batches += 1
+
+                # Calculate accuracy (ignoring padding tokens)
+                predictions = test_output.argmax(dim=1)
+                mask = test_target_word != 0  # Ignore padding tokens
+                correct_predictions += (predictions[mask] == test_target_word[mask]).sum().item()
+                total_predictions += mask.sum().item()
+
+        avg_test_loss = total_test_loss / num_test_batches
+        test_accuracy = correct_predictions / total_predictions if total_predictions > 0 else 0
+
+        print('Final Test Results:')
+        print(f'Average Test Loss: {avg_test_loss:.4f}')
+        print(f'Test Accuracy: {test_accuracy:.2%}')
+
+        return {
+            'best_val_loss': best_val_loss,
+            'final_test_loss': avg_test_loss,
+            'test_accuracy': test_accuracy
+        }
+
+    return {'best_val_loss': best_val_loss}
 
 
-def inference(model, roundness_value):
+def inference(model, roundness, tokenizer, device="cuda" if torch.cuda.is_available() else "cpu"):
     """
-    Run inference for a single roundness value
+    Generate a pseudoword from a roundness value using the trained model.
+
     Args:
-        model: RoundnessToTextModel instance
-        roundness_value (float): Single roundness value
+        model: The trained WordTransformer model
+        roundness: A float value representing the roundness
+        tokenizer: Tokenizer for decoding the output
+        device: Device to run inference on ('cuda' or 'cpu')
+
+    Returns:
+        str: The generated pseudoword
     """
     model.eval()
     with torch.no_grad():
-        roundness_tensor = torch.tensor(
-            [[roundness_value]], dtype=torch.float32
-        ).view(-1, 1).to(model.device)
-        outputs = model(roundness_tensor)
-    return outputs['generated_text'][0]
+        # Convert input to tensor and move to device
+        if isinstance(roundness, (int, float)):
+            roundness = torch.tensor([roundness], dtype=torch.float32)
+        roundness = roundness.to(device)
+
+        # Generate output
+        output = model(roundness)
+        predicted_tokens = output.argmax(-1)
+
+        # Decode the predicted tokens
+        word = tokenizer.decode(predicted_tokens[0])
+
+        return word
