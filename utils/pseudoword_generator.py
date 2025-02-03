@@ -1,5 +1,11 @@
+from torch.utils.data import DataLoader
+from utils.word_tokenizer import wordTokenizer
+from prodigyopt import Prodigy
+from itertools import product
+from datetime import datetime
 from torch import nn
 import torch
+import json
 import os
 
 
@@ -91,19 +97,40 @@ def load_model(
 
 
 def train(
-    model,
-    optimizer,
-    trainLoader,
-    valLoader,
-    testLoader=None,
+    trn,
+    val,
+    tst,
+    params,
     device="cuda" if torch.cuda.is_available() else "cpu",
     epochs=10,
     patience=3,
     min_delta=1e-4
 ):
-    model.to(device)
-    criterion = nn.CrossEntropyLoss(ignore_index=0)
+    tokenizer = wordTokenizer(max_length=params['max_length'])
+
+    # Create data loaders with current batch size
+    batch_size = params['batch_size']
+    trainLoader = DataLoader(trn, batch_size=batch_size, shuffle=True, collate_fn=tokenizer.collate_fn)
+    valLoader = DataLoader(val, batch_size=batch_size, shuffle=True, collate_fn=tokenizer.collate_fn)
+    if tst is not None:
+        testLoader = DataLoader(tst, batch_size=batch_size, shuffle=True, collate_fn=tokenizer.collate_fn)
+
+    model = WordTransformer(
+        d_model=params["d_model"],
+        nhead=params["nhead"],
+        num_layers=params["num_layers"],
+        max_length=params["max_length"]
+    ).to(device)
+
+    optimizer = Prodigy(
+        model.parameters(),
+        lr=params['learning_rate'],
+        weight_decay=params['weight_decay'],
+    )
+
     best_val_loss = float('inf')
+
+    criterion = nn.CrossEntropyLoss(ignore_index=0)
     patience_counter = 0
 
     for epoch in range(epochs):
@@ -165,6 +192,7 @@ def train(
 
         if patience_counter >= patience:
             print(f'\nEarly stopping triggered after epoch {epoch}')
+            print(f'Best Validation Loss: {best_val_loss:.4f}')
             model.load_state_dict(best_model)
             break
 
@@ -172,8 +200,6 @@ def train(
     if testLoader is not None:
         total_test_loss = 0
         num_test_batches = 0
-        correct_predictions = 0
-        total_predictions = 0
 
         print("\nEvaluating on test set...")
         model.eval()
@@ -190,26 +216,91 @@ def train(
                 total_test_loss += test_loss.item()
                 num_test_batches += 1
 
-                # Calculate accuracy (ignoring padding tokens)
-                predictions = test_output.argmax(dim=1)
-                mask = test_target_word != 0  # Ignore padding tokens
-                correct_predictions += (predictions[mask] == test_target_word[mask]).sum().item()
-                total_predictions += mask.sum().item()
-
         avg_test_loss = total_test_loss / num_test_batches
-        test_accuracy = correct_predictions / total_predictions if total_predictions > 0 else 0
 
         print('Final Test Results:')
         print(f'Average Test Loss: {avg_test_loss:.4f}')
-        print(f'Test Accuracy: {test_accuracy:.2%}')
 
         return {
             'best_val_loss': best_val_loss,
             'final_test_loss': avg_test_loss,
-            'test_accuracy': test_accuracy
+            'model': model,
+            'tokenizer': tokenizer
         }
 
-    return {'best_val_loss': best_val_loss}
+    return {
+        'best_val_loss': best_val_loss,
+        'final_test_loss': None,
+        'model': model,
+        'tokenizer': tokenizer
+        }
+
+
+def grid_search(
+    trn,
+    val,
+    tst=None,
+    epochs=10,
+    patience=3,
+    device="cuda" if torch.cuda.is_available() else "cpu",
+    param_grid=None,
+):
+    # Define hyperparameter grid
+    if param_grid is None:
+        param_grid = {
+            'd_model': [32, 64, 128],
+            'nhead': [2, 4, 8],
+            'num_layers': [2, 4, 6],
+            'learning_rate': [0.1, 0.5, 1.0],
+            'weight_decay': [0, 0.01, 0.1],
+            'batch_size': [4, 8],
+            'max_length': [12, 16, 20]
+        }
+
+    # Generate all combinations
+    param_combinations = [dict(zip(param_grid.keys(), v)) for v in product(*param_grid.values())]
+
+    # Store results
+    results = []
+
+    # Create timestamp for saving results
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    count = 1
+
+    # Run grid search
+    for params in param_combinations:
+        print(f"\n[{count}/{len(param_combinations)}] Testing parameters: {params}")
+
+        # Train and get validation loss
+        result = train(
+            trn=trn,
+            val=val,
+            tst=tst,
+            params=params,
+            device=device,
+            epochs=epochs,
+            patience=patience,
+        )
+
+        # Store results
+        result = {
+            'parameters': params,
+            'validation_loss': result["best_val_loss"],
+        }
+        results.append(result)
+
+        # Save intermediate results
+        with open(f'outputs/grid_search_results_{timestamp}.json', 'w') as f:
+            json.dump(results, f, indent=4)
+        count += 1
+
+    # Find best parameters
+    best_result = min(results, key=lambda x: x['validation_loss'])
+    print("\nGrid search completed!")
+    print(f"Best parameters: {best_result['parameters']}")
+    print(f"Best validation loss: {best_result['validation_loss']}")
+
+    return best_result
 
 
 def inference(model, roundness, tokenizer, device="cuda" if torch.cuda.is_available() else "cpu"):
