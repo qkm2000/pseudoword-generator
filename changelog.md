@@ -61,3 +61,13 @@
 - the model trained for 85 epochs with an early stopping patience of 10
 - validation loss is higher, at 2.6275
 - the generated pseudowords are of higher quality. the words are more consistent in length, and seem to be even more in tune with the roundness. however, there are notable exceptions: 0.1 roundness -> wamu
+
+## 3.3
+
+- changed to a simpler transformer model for generation
+- created a custom tokenizer that takes only English characters and special tokens (total 29 tokens)
+- used the normalized.csv dataset
+- removed the need to have a data model since this is not japanese-based
+- gridsearch for best hyperparams
+- generated words are of quite high quality, and tend to match the roundness very well
+- the generated words tend to be quite repeated. suspect it's because of the lack of training data or maybe overfitting
