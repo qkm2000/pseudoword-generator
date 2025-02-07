@@ -191,7 +191,7 @@ def train(
             patience_counter += 1
 
         if patience_counter >= patience:
-            print(f'\nEarly stopping triggered after epoch {epoch}')
+            print(f'\nEarly stopping triggered after epoch {epoch+1}')
             print(f'Best Validation Loss: {best_val_loss:.4f}')
             model.load_state_dict(best_model)
             break
@@ -286,6 +286,7 @@ def grid_search(
         result = {
             'parameters': params,
             'validation_loss': result["best_val_loss"],
+            'test_loss': result["final_test_loss"]
         }
         results.append(result)
 
@@ -295,10 +296,10 @@ def grid_search(
         count += 1
 
     # Find best parameters
-    best_result = min(results, key=lambda x: x['validation_loss'])
+    best_result = min(results, key=lambda x: x['test_loss'])
     print("\nGrid search completed!")
     print(f"Best parameters: {best_result['parameters']}")
-    print(f"Best validation loss: {best_result['validation_loss']}")
+    print(f"Best test loss: {best_result['test_loss']}")
 
     return best_result
 

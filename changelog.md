@@ -66,8 +66,17 @@
 
 - changed to a simpler transformer model for generation
 - created a custom tokenizer that takes only English characters and special tokens (total 29 tokens)
-- used the normalized.csv dataset
+- used the normalized.csv dataset, but the train is from [0:100], val is [100:110], tst is [110:124]
 - removed the need to have a data model since this is not japanese-based
-- gridsearch for best hyperparams
+- gridsearch for best hyperparams, using best val loss as the metric
 - generated words are of quite high quality, and tend to match the roundness very well
 - the generated words tend to be quite repeated. suspect it's because of the lack of training data or maybe overfitting
+- the best parameters are: 'd_model': 128, 'nhead': 8, 'num_layers': 8, 'learning_rate': 0.1, 'weight_decay': 0.01, 'batch_size': 8, 'max_length': 16
+
+## 3.4
+
+- changed the dataset creation method. it used to be linear sampling, now is random sampling
+- gridsearch for best hyperparams, using test loss as the metric to have the most generalisable model
+- generated words are also of high quality, but interestingly do not have the character `k` much, and it seems to have taken `t` as the sharpest character
+- similar to [3.3](#33), the words tend to be quite repeated
+- the best parameters are: 'd_model': 128, 'nhead': 16, 'num_layers': 8, 'learning_rate': 0.1, 'weight_decay': 0.01, 'batch_size': 8, 'max_length': 16

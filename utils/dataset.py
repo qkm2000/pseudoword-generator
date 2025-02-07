@@ -5,45 +5,36 @@ import pandas as pd
 import torch
 
 
-class trainDataset(Dataset):
-    def __init__(self):
-        df = pd.read_csv(r"datasets/normalized.csv", nrows=100, skiprows=1)
-        self.input_val = df.iloc[:, 1]
-        self.target_word = df.iloc[:, 0]
-        self.tokenizer = wordTokenizer()
+def create_datasets(
+    trn_ratio=0.8,
+    val_ratio=0.1,
+    tst_ratio=0.1,
+):
+    df = pd.read_csv(r"datasets/normalized.csv")
+    trn = df.sample(frac=trn_ratio)
+    df = df.drop(trn.index)
+    df.reset_index(drop=True, inplace=True)
 
-    def __len__(self):
-        return len(self.input_val)
+    val_ratio = val_ratio / (val_ratio + tst_ratio)
 
-    def __getitem__(self, idx):
-        input_val = self.input_val[idx]
-        input_val = torch.tensor(input_val)
-        target_word = self.target_word[idx]
-        return input_val, target_word
+    val = df.sample(frac=val_ratio)
+    tst = df.drop(val.index)
 
+    trn.reset_index(drop=True, inplace=True)
+    val.reset_index(drop=True, inplace=True)
+    tst.reset_index(drop=True, inplace=True)
 
-class valDataset(Dataset):
-    def __init__(self):
-        df = pd.read_csv(r"datasets/normalized.csv", skiprows=100, nrows=10)
-        self.input_val = df.iloc[:, 1]
-        self.target_word = df.iloc[:, 0]
-        self.tokenizer = wordTokenizer()
-
-    def __len__(self):
-        return len(self.input_val)
-
-    def __getitem__(self, idx):
-        input_val = self.input_val[idx]
-        input_val = torch.tensor(input_val)
-        target_word = self.target_word[idx]
-        return input_val, target_word
+    trn = custom_dataset(trn)
+    val = custom_dataset(val)
+    tst = custom_dataset(tst)
+    return trn, val, tst
 
 
-class testDataset(Dataset):
-    def __init__(self):
-        df = pd.read_csv(r"datasets/normalized.csv", skiprows=110)
-        self.input_val = df.iloc[:, 1]
-        self.target_word = df.iloc[:, 0]
+class custom_dataset(Dataset):
+    def __init__(self, df):
+        self.data = df
+        self.input_val = self.data.iloc[:, 1]
+        self.target_word = self.data.iloc[:, 0]
         self.tokenizer = wordTokenizer()
 
     def __len__(self):
