@@ -80,3 +80,11 @@
 - generated words are also of high quality, but interestingly do not have the character `k` much, and it seems to have taken `t` as the sharpest character
 - similar to [3.3](#33), the words tend to be quite repeated
 - the best parameters are: 'd_model': 128, 'nhead': 16, 'num_layers': 8, 'learning_rate': 0.1, 'weight_decay': 0.01, 'batch_size': 8, 'max_length': 16
+
+## 3.5
+
+- included a simple generator that uses arbitrary sound mappings and a rule-based system to generate pseudowords
+- it selects characters based on the sound mapping, and constructs the pseudowords
+- it also smooths out the character selection via interpolation
+- the results look quite good, with the generated words matching what people generally expect
+- however, because the dataset is arbitrarily selected, there is inherent bias introduced
