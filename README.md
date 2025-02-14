@@ -109,3 +109,9 @@ This project is meant to propose a model that takes in a roundness value and gen
 - the results are not great, and there are 2 suspected reasons:
   1. there is inherent bias in the categories because the data is obtained from another model
   2. the categories are rather large, and this may lead to loss in nuance. an input value between 0.25 to 0.75 could use the same set of consonants to generate a word
+
+### 4.2
+
+- index-choice generator
+- similar to [4.1](#41), but instead of dicts with fixed roundness values, the characters are now in a list and are selected based on their index
+- the results are better than [4.1](#41), but the problem still exists where there in inherent bias in the dataset because of CLIP and SD's biases
