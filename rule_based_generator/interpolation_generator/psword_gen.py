@@ -105,9 +105,9 @@ def pseudoword_generator(
 
 
 if __name__ == "__main__":
-    filename = r'rule_based_generator/sound_mappings.json'
-    num_tests = 10
-    bouba_kiki_value = [random.random() for _ in range(num_tests)]
+    filename = r'rule_based_generator\interpolation_generator\sound_mappings.json'
+    num_tests = 11
+    bouba_kiki_value = [i/(num_tests-1) for i in range(num_tests)]
     scores = []
     accumulated_error = 0
 
@@ -122,7 +122,7 @@ if __name__ == "__main__":
             filename
         )
         scores.append(score)
-        print(f"Bouba-Kiki Value: {bouba_kiki_value[i]:.4f}", end=" | ")
+        print(f"Roundness: {bouba_kiki_value[i]:.4f}", end=" | ")
         print(f"Pseudoword: {pseudoword:<8}", end=" | ")
         print(f"Score: {score:.4f}", end=" | ")
         print(f"Error: {error:.4f}")
