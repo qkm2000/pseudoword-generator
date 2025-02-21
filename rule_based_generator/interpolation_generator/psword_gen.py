@@ -22,22 +22,6 @@ def select_sounds(
     return [sound[0] for sound in sorted_sounds[:num_sounds]]
 
 
-def interpolate_sounds(bouba_kiki_value, sound_dict):
-    """
-    Interpolate between 'kiki' and 'bouba' sounds based on the target value.
-    """
-    kiki_sounds = select_sounds(0, sound_dict, num_sounds=5)  # Sharp sounds
-    bouba_sounds = select_sounds(1, sound_dict, num_sounds=5)  # Rounded sounds
-
-    # Weighted selection based on Bouba-Kiki value
-    if bouba_kiki_value <= 0.5:
-        # More kiki-like
-        return random.choice(kiki_sounds) if random.random() < (1 - bouba_kiki_value * 2) else random.choice(bouba_sounds)
-    else:
-        # More bouba-like
-        return random.choice(bouba_sounds) if random.random() < (bouba_kiki_value * 2 - 1) else random.choice(kiki_sounds)
-
-
 def generate_pseudoword(
     consonants,
     vowels,
@@ -105,7 +89,7 @@ def pseudoword_generator(
 
 
 if __name__ == "__main__":
-    filename = r'rule_based_generator\interpolation_generator\sound_mappings.json'
+    filename = r'datasets\sound_mappings.json'
     num_tests = 11
     bouba_kiki_value = [i/(num_tests-1) for i in range(num_tests)]
     scores = []

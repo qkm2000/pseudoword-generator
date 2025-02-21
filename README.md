@@ -93,6 +93,12 @@ This project is meant to propose a model that takes in a roundness value and gen
 - the results look quite good, with the generated words matching what people generally expect
 - however, because the dataset is arbitrarily selected, there is inherent bias introduced
 
+### 4.0.1
+
+- created a new dataset
+  - this dataset was created by adding the roundness scores of all characters in every word, calculating the number of occurrences of each character in the whole dataset, obtaining the average roundness score of each character, then normalizing it
+- results are better than the original 4.0, but it still feels like the generated words do not match the input values well
+
 ### 4.1
 
 - dict-choice generator
